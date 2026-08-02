@@ -94,6 +94,3 @@ mvn test
 
 Contributions are welcome. Please open an issue or submit a pull request with a clear description of changes.
 
-## License
-
-Add a license file if you want to specify licensing for this project.
