@@ -1,6 +1,6 @@
-# URL Shortener Service
+# SwiftRoute Service
 
-A simple URL shortener built with Spring Boot and MongoDB.
+A simple SwiftRoute built with Spring Boot and MongoDB.
 
 This repository provides a minimal service to create short URLs and redirect to the original long URLs. The project is implemented in Java (Java 17) using Spring Boot and Spring Data MongoDB.
 
@@ -87,7 +87,7 @@ mvn test
 
 ## Development notes
 
-- The Maven `pom.xml` in `Url shortner/` shows this is a Spring Boot application using `spring-boot-starter-web` and `spring-boot-starter-data-mongodb`.
+- The Maven `pom.xml` in `SwiftRoute/` shows this is a Spring Boot application using `spring-boot-starter-web` and `spring-boot-starter-data-mongodb`.
 - If you use Lombok in your IDE, enable annotation processing.
 
 ## Contributing
