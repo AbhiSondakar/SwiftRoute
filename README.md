@@ -5,7 +5,7 @@
 
 ## Overview
 
-SwiftRoute transforms long URLs into clean, manageable links while capturing granular click analytics asynchronously. Designed to handle high-concurrency redirect traffic without sacrificing precision, it heavily utilizes Redis as both a unified reservation layer for unique codes and a rich read-through cache. The platform is paired with a ReactFlow-powered frontend, giving users an interactive, node-based dashboard to visualize and trace their link traffic in real time.
+SwiftRoute transforms long URLs into clean, manageable links while capturing granular click analytics asynchronously. Designed to handle high-concurrency redirect traffic without sacrificing precision, it uses Redis as both a unified reservation layer for unique codes and a rich read-through cache, with PostgreSQL as the system of record. The platform is paired with a ReactFlow-powered frontend, giving users an interactive, node-based dashboard to visualize and trace their link traffic in real time.
 
 ### [Frontend Code](https://github.com/AbhiSondakar/SwiftRoute-View)
 
@@ -20,7 +20,7 @@ SwiftRoute transforms long URLs into clean, manageable links while capturing gra
 **Performance & Core Shortening**
 * **Instant Shortening:** Generates 6-character Base62 short links (yielding ~56.8 billion combinations) dynamically.
 * **High-Speed Redirects:** Redis-first caching strategy ensures sub-millisecond redirect resolution.
-* **Atomic Collision Prevention:** Relies on a unified Redis `SETNX` reservation mechanism for all links, backed by MongoDB's unique index.
+* **Atomic Collision Prevention:** Relies on a unified Redis `SETNX` reservation mechanism for all links, backed by PostgreSQL's unique constraint.
 
 **Advanced Link Management**
 * **Guest Mode:** Create temporary short links instantly with a strictly enforced 24-hour TTL without an account.
@@ -28,7 +28,7 @@ SwiftRoute transforms long URLs into clean, manageable links while capturing gra
 * **Rich Cache Objects:** Soft deletes, expirations, and passwords are comprehensively enforced even on blazing-fast cache hits.
 
 **Analytics & Visualization**
-* **Asynchronous Analytics:** Click events (IP, User-Agent, Referer) are decoupled from the redirect path and persisted via a dedicated background thread pool.
+* **Asynchronous Analytics:** Click events (IP, user agent, referer) are decoupled from the redirect path and persisted to PostgreSQL via a dedicated background thread pool.
 * **Interactive Canvas:** Explore link trees, visualize traffic flows, and manage links seamlessly via a drag-and-drop dashboard.
 
 ## 🛠️ Tech Stack
@@ -36,7 +36,7 @@ SwiftRoute transforms long URLs into clean, manageable links while capturing gra
 | Layer | Technology | Purpose |
 | :--- | :--- | :--- |
 | **Backend** | Java 21 & Spring Boot 3.3.2 | Core API framework managing controllers, services, validation, and async tasks. |
-| **Primary Database** | MongoDB | Stores user profiles, URL metadata, and time-series click events. |
+| **Primary Database** | PostgreSQL | Stores user profiles, URL metadata, and time-series click events. |
 | **Cache & Locks** | Redis | High-speed cache for read-heavy redirects and atomic locks (`SETNX`) for unique code generation. |
 | **Security** | Spring Security + JWT | Stateless route protection and BCrypt password hashing. |
 | **JSON Processing** | Jackson | Fast serialization/deserialization for rich cache objects in Redis. |
@@ -55,7 +55,7 @@ graph LR
         DASH["Dashboard (ReactFlow)"]
     end
 
-    subgraph Backend ["Spring Boot (Port 9000)"]
+    subgraph Backend ["Spring Boot (Port 8080)"]
         API["REST Controllers"]
         SVC["Service Layer"]
         AUTH["Security Filter Chain"]
@@ -66,7 +66,7 @@ graph LR
 
     subgraph Infrastructure
         REDIS[("Redis (Cache/Locks)")]
-        MONGO[("MongoDB (Primary)")]
+        POSTGRES[("PostgreSQL (Primary)")]
     end
 
     LP -.-> |Guest Create / Login| AUTH
@@ -74,14 +74,14 @@ graph LR
     AUTH --> API
 
     SVC --> |Cache Lookups & SETNX| REDIS
-    SVC --> |Persistence & Unique Constraint| MONGO
+    SVC --> |Persistence & Unique Constraint| POSTGRES
     
     SVC -.-> |Fire Analytics Event| ASYNC
-    ASYNC --> |Write Click Data & $inc| MONGO
+    ASYNC --> |Write Click Data & increment count| POSTGRES
 ```
 
 **Why Package-by-Feature?**
-The backend is structured into domain modules (`url`, `auth`, `user`, `analytics`, `core`) rather than technical layers. This deliberate monolith boundary design keeps the codebase easily navigable for a single team while ensuring that extracting a heavily-loaded service—like the decoupled analytics pipeline—will be trivial if independent scaling is ever justified.
+The backend is structured into domain modules (`url`, `auth`, `user`, `analytics`, `core`) under `src/main/java/com/SwiftRoute/`, rather than technical layers. This deliberate monolith boundary design keeps the codebase easily navigable for a single team while ensuring that extracting a heavily-loaded service—like the decoupled analytics pipeline—will be trivial if independent scaling is ever justified.
 
 ### 1. URL Creation Flow
 
@@ -90,7 +90,7 @@ sequenceDiagram
     participant User
     participant API as URL Controller
     participant SVC as Management Service
-    participant DB as MongoDB
+    participant DB as PostgreSQL
     participant REDIS as Redis
 
     User->>API: POST /urls (Original URL)
@@ -104,7 +104,7 @@ sequenceDiagram
         
         alt is Authenticated User & SETNX Succeeded
             SVC->>DB: save(Url)
-            Note over SVC, DB: Mongo unique index acts as absolute backstop
+            Note over SVC, DB: PostgreSQL unique constraint acts as absolute backstop
         end
     end
     
@@ -115,10 +115,10 @@ sequenceDiagram
 1. **Validation:** Ensure the URL scheme is `http`/`https`, within limits (max 2048 chars), and not self-referential to prevent loops.
 2. **Generation:** Roll a random 6-character Base62 string.
 3. **Atomic Reservation:** Execute `SETNX` in Redis to globally reserve the code. This prevents cross-type collisions (a guest claiming a code a user just generated). 
-4. **Persistence:** If the reservation succeeds, authenticated links are pushed to MongoDB. A `DuplicateKeyException` catch blocks race conditions, rolling back the Redis key and retrying.
+4. **Persistence:** If the reservation succeeds, authenticated links are pushed to PostgreSQL. A `DuplicateKeyException` catch blocks race conditions, rolling back the Redis key and retrying.
 5. **Alerting:** If 5 sequential retries fail, the system logs a critical alert, indicating a broken RNG rather than an exhausted code space.
 
-*Why a retry-based collision strategy?* Atomic constraints (Mongo unique index, Redis `SETNX`) guarantee mathematical correctness without the cross-instance synchronization flaws of in-memory Bloom Filters.
+*Why a retry-based collision strategy?* Atomic constraints (PostgreSQL unique constraint, Redis `SETNX`) guarantee mathematical correctness without the cross-instance synchronization flaws of in-memory Bloom Filters.
 
 ### 2. High-Speed Redirect Flow
 
@@ -127,7 +127,7 @@ sequenceDiagram
     participant Visitor
     participant API as Redirect Controller
     participant REDIS as Redis Cache
-    participant DB as MongoDB
+    participant DB as PostgreSQL
     participant ASYNC as Analytics Listener
 
     Visitor->>API: GET /{shortCode}
@@ -147,12 +147,12 @@ sequenceDiagram
     
     Note right of ASYNC: Asynchronous Background Thread
     ASYNC->>DB: save(Click Analytics)
-    ASYNC->>DB: $inc clickCount
+    ASYNC->>DB: increment clickCount
 ```
 
 1. **Cache Read:** System fetches the short code directly from Redis.
 2. **Rich Cache Hit:** Parses the `CachedUrl` JSON string to enforce soft-deletes, expirations, and passwords instantaneously without hitting the primary database.
-3. **Fallback & Hydration:** On a cache miss, MongoDB is queried, and the retrieved document is parsed back into the rich JSON cache.
+3. **Fallback & Hydration:** On a cache miss, PostgreSQL is queried, and the retrieved document is parsed back into the rich JSON cache.
 4. **Redirect:** Returns `HTTP 302 Found` to the user immediately.
 5. **Async Analytics:** Offloads the click metrics to an independent thread pool to prevent blocking the visitor.
 
@@ -160,7 +160,7 @@ sequenceDiagram
 
 ## 🗄️ Database Schema
 
-| Collection | Key Fields | Indexes | Why indexed this way |
+| Table | Key Fields | Indexes | Why indexed this way |
 | :--- | :--- | :--- | :--- |
 | `users` | `email`, `passwordHash`, `name` | `email` (Unique) | Enforces unique account registration and accelerates login lookups. |
 | `urls` | `shortCode`, `originalUrl`, `userId`, `expiresAt`, `clickCount` | `shortCode` (Unique), `userId` | `shortCode` enforces link uniqueness at the DB level; `userId` speeds up fetching dashboard link trees. |
@@ -181,41 +181,72 @@ sequenceDiagram
 
 ## 🏃 Getting Started
 
-### Prerequisites
+### Docker Compose (Recommended)
+
+Prerequisites:
+* Docker Desktop or Docker Engine with Docker Compose
+
+Start the application, PostgreSQL, and Redis:
+
+```bash
+docker compose up --build
+```
+
+The backend is available at `http://localhost:8080`. PostgreSQL and Redis are also exposed on ports `5432` and `6379` for local development. The database and Redis data persist in the `postgres_data` and `redis_data` named volumes.
+
+Run in the background:
+
+```bash
+docker compose up --build -d
+```
+
+View application logs:
+
+```bash
+docker compose logs -f app
+```
+
+Stop the stack:
+
+```bash
+docker compose down
+```
+
+Stop the stack and remove persisted data:
+
+```bash
+docker compose down -v
+```
+
+### Run Without Docker
+
+Prerequisites:
 * Java 21+
-* Node.js 18+
-* MongoDB (Local or Atlas)
-* Redis (Local)
+* Maven 3.9+
+* PostgreSQL
+* Redis
 
-### Backend Setup
-1. Open the `backend` directory.
-2. Set the required environment variables (can be exported or added to a `.env` depending on your IDE):
-   ```bash
-   export SPRING_DATA_MONGODB_URI="mongodb://localhost:27017/urlshortener"
-   export SPRING_REDIS_HOST="localhost"
-   export APP_JWT_SECRET="<your_base64_256_bit_secret>"
-   ```
-3. Run the Spring Boot application (starts on port `9000`):
-   ```bash
-   mvn spring-boot:run
-   ```
+Set the required environment variables, then start Spring Boot:
 
-### Frontend Setup
-1. Open the `frontend` directory.
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Start the Vite development server (starts on port `5173`):
-   ```bash
-   npm run dev
-   ```
+```bash
+export DATABASE_URL="jdbc:postgresql://localhost:5432/urlshortener"
+export REDIS_URL="redis://localhost:6379"
+export PORT="8080"
+mvn spring-boot:run
+```
+
+The backend starts on port `8080` by default. The frontend is maintained in the linked [Frontend Code](https://github.com/AbhiSondakar/SwiftRoute-View) repository.
 
 ## 📁 Project Structure
 
 ```text
-backend/src/main/java/com/urlshortener/
-├── UrlShortenerApplication.java
+.
+├── Dockerfile                 # Multi-stage Java 21 container build
+├── docker-compose.yml         # SwiftRoute, PostgreSQL, and Redis services
+├── pom.xml                    # Maven build and dependencies
+├── README.md
+└── src/main/java/com/SwiftRoute/
+├── SwiftRouteApplication.java
 ├── analytics/           # Background metrics and event listeners
 │   ├── entity/
 │   ├── event/
