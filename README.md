@@ -271,9 +271,3 @@ The backend starts on port `8080` by default. The frontend is maintained in the 
     └── repository/
 ```
 
-## 🗺️ Roadmap
-
-- **Rate Limiting:** Implement token bucket rate-limiting (e.g., Bucket4j) specifically for guest creation and login endpoints to mitigate brute-force and spam link generation.
-- **Refresh Tokens:** Shift to a short-lived access token and robust refresh token model to mitigate the security window of stateless JWT expiry.
-- **Analytics Export API:** Expose paginated endpoints and CSV exports for power users directly from the time-series compound index.
-- **Custom Domains:** Support vanity domains tied directly to registered user accounts.
